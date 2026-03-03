@@ -1,0 +1,248 @@
+Step-by-step project creation roadmap (from scratch → complete Hybrid RBAC)
+Phase 0 — Foundation (Day 0–1)
+
+Create Spring Boot project
+
+Dependencies: Web, Security, Validation, Data JPA, PostgreSQL, Flyway, Lombok, Cache (Caffeine), Actuator
+
+Create base modules
+
+platform package (public schema APIs)
+
+tenant package (tenant schema APIs)
+
+security package (filters, jwt, permission)
+
+multitenancy package (TenantContext, resolver, connection provider)
+
+Deliverable: app starts, DB connection works, Flyway runs.
+
+Phase 1 — Database Migrations (Day 1–2)
+
+Flyway migrations
+
+db/migration/public/V1__init_public.sql
+
+db/migration/tenant/V1__init_tenant.sql
+
+Public schema tables
+
+meta_admin, company_details, subscription, tenant_user_map
+
+seravion_users, seravion_user_roles
+
+Tenant schema template tables
+
+users, roles, user_roles, modules, actions
+
+role_module_action_permission, user_permission (optional)
+
+tenant_security_state
+
+Deliverable: public schema created; tenant template migrations ready.
+
+Phase 2 — Authentication (Day 2–4)
+
+JWT module
+
+JwtService (issue/validate)
+
+Two token types: PLATFORM and TENANT
+
+Security Filter Chains (two chains)
+
+Chain A: /platform/** → validates platform JWT
+
+Chain B: /tenant/** → validates tenant JWT + sets TenantContext
+
+Auth endpoints
+
+POST /platform/auth/register (MetaAdmin)
+
+POST /platform/auth/login (MetaAdmin + Seravion)
+
+POST /tenant/auth/login (tenant users, after provisioning)
+
+Deliverable: platform login returns platform JWT; tenant login returns tenant JWT.
+
+Phase 3 — Tenant Resolution + Multi-tenancy (Day 4–6)
+
+TenantContext
+
+ThreadLocal<String> with default "public"
+
+Hibernate schema switching
+
+CurrentTenantIdentifierResolver
+
+MultiTenantConnectionProvider
+
+JWT → TenantContext
+
+Tenant JWT filter extracts schema claim and sets context per request
+
+Deliverable: tenant endpoints automatically query correct schema.
+
+Phase 4 — Platform Onboarding Flow (Day 6–9)
+
+Company registration
+
+POST /platform/company (creates company_details, status SUBMITTED)
+
+Provider approval
+
+POST /platform/company/{id}/approve (ROLE_SERAVION)
+
+POST /platform/company/{id}/reject (ROLE_SERAVION)
+
+Subscription
+
+POST /platform/subscription/purchase
+
+mark ACTIVE (simulate payment for now)
+
+Deliverable: approved company + active subscription record exists.
+
+Phase 5 — Tenant Provisioning (Day 9–12)
+
+Schema name generator
+
+tenant_<3letters>_SER_<hash>
+
+Provision tenant
+
+Create schema
+
+Run tenant Flyway migrations on that schema
+
+Seed tenant RBAC
+
+Insert base modules, actions
+
+Insert roles: TENANT_CEO, etc.
+
+Insert all permissions for TENANT_CEO
+
+Create tenant CEO user
+
+Copy from public.meta_admin
+
+Assign role TENANT_CEO in user_roles
+
+Write mapping
+
+Insert into public.tenant_user_map
+
+Deliverable: tenant schema exists + CEO user exists in tenant.
+
+Phase 6 — Token Exchange (Day 12–13)
+
+Tenant token exchange endpoint
+
+POST /platform/auth/tenant-token
+
+Input: platform JWT
+
+Checks:
+
+company APPROVED
+
+subscription ACTIVE and not expired
+
+mapping exists
+
+Output: tenant JWT with {uid, schema, roles}
+
+Deliverable: CEO can obtain tenant token and call /tenant/**.
+
+Phase 7 — Dynamic Authorization (Hybrid RBAC) (Day 13–17)
+
+PermissionService (@perm.can)
+
+Cache key: schema:userId:permissionVersion
+
+Loads permissions on miss:
+
+from role permissions
+
+apply user overrides (DENY > ALLOW)
+
+Permission queries
+
+Native queries for:
+
+role perms for user
+
+user overrides for user
+
+permission_version bump
+
+Implement bump in service layer OR DB triggers (preferred)
+
+Trigger on:
+
+user_roles
+
+role_module_action_permission
+
+user_permission
+
+Deliverable: @PreAuthorize("@perm.can(...)") works and updates apply immediately.
+
+Phase 8 — RBAC Management APIs (Day 17–22)
+
+Modules/Actions management
+
+POST /tenant/rbac/modules
+
+POST /tenant/rbac/actions
+
+Role management
+
+POST /tenant/rbac/roles
+
+PUT /tenant/rbac/roles/{id}
+
+Role permission assignment
+
+PUT /tenant/rbac/roles/{id}/permissions
+
+User role assignment
+
+PUT /tenant/users/{id}/roles
+
+User overrides
+
+PUT /tenant/users/{id}/permissions (ALLOW/DENY)
+
+Secure these endpoints with:
+
+@PreAuthorize("hasRole('TENANT_CEO') or @perm.can(authentication,'RBAC','MANAGE')")
+
+Deliverable: full UI/API capability to manage RBAC.
+
+Phase 9 — Production hardening (Day 22+)
+
+Audit logging
+
+log: who changed permissions, when, before/after
+
+Subscription gating on tenant requests
+
+tenant filter checks subscription still ACTIVE
+
+Rate limiting for auth endpoints
+
+Tests
+
+unit: permission evaluation logic
+
+integration: multi-tenant schema routing
+
+security tests: 403/401 scenarios
+
+Observability
+
+Actuator metrics for cache hit rate, auth failures, permission checks
+
+Deliverable: stable, secure, measurable RBAC system.
